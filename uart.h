@@ -30,7 +30,7 @@
 // more than once.  
 #ifndef XC_HEADER_TEMPLATE_H
 #define	XC_HEADER_TEMPLATE_H
-
+// Comment
 #include <xc.h> // include processor files - each processor file is guarded.  
 #include "string.h"
 // TODO Insert appropriate #include <>

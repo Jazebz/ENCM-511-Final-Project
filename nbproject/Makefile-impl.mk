@@ -24,7 +24,7 @@ CLEAN_SUBPROJECTS=${CLEAN_SUBPROJECTS_${SUBPROJECTS}}
 
 
 # Project Name
-PROJECTNAME=freertos-start.X
+PROJECTNAME=ENCM-511-Final-Project
 
 # Active Configuration
 DEFAULTCONF=default
