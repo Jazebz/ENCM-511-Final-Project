@@ -14,8 +14,8 @@ uint8_t RXFlag = 0;
 void InitUART2(void) 
 {
 
-    RPINR19bits.U2RXR = 11; // ??????????????????????
-    RPOR5bits.RP10R = 5;    // ??????????????????????
+    RPINR19bits.U2RXR = 11; // Sets RX
+    RPOR5bits.RP10R = 5;    // Sets TX
 
     U2MODE = 0b0000000010001000;
 
@@ -47,7 +47,7 @@ void InitUART2(void)
 void Disp2String(char *str) //Displays String of characters
 {
     unsigned int i;
-    for (i=0; i<= strlen(str); i++)
+    for (i=0; i< strlen(str); i++)
     {
         XmitUART2(str[i],1);
     }
