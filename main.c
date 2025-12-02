@@ -227,10 +227,6 @@ void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
 	for( ;; );
 }
 
-
-static int counter = 0;
-
-
 // FreeRTOS task prototypes
 void vWaitingTask(void *pvParameters);
 void vTimeEntryTask(void *pvParameters);
@@ -1015,7 +1011,7 @@ int main(void) {
     // WAITING & PB1 
     xTaskCreate( vWaitingTask, "WaitTask", TASK_STACK_SIZE, NULL, 2, NULL);
 
-    // TIME ENTRY using UART with the PB2+PB3 combo meal (aperiodic)
+    // TIME ENTRY using UART with the PB2+PB3 combo (aperiodic)
     xTaskCreate( vTimeEntryTask, "TimeEntryTask", TASK_STACK_SIZE, NULL, 2, NULL);
 
     // COUNTDOWN has the core timing with the ADC, PB3 pause/abort and "i"/"b" its a periodic function
