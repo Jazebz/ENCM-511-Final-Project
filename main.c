@@ -254,6 +254,14 @@ void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
 
 static int counter = 0;
 
+
+// ---------- FreeRTOS task prototypes (NEW) ----------
+void vWaitingTask(void *pvParameters);
+void vTimeEntryTask(void *pvParameters);
+void vCountdownTask(void *pvParameters);
+void vDoneTask(void *pvParameters);
+
+
 /* Test task for reference
 void vTask1(void *pvParameters)
 {
@@ -376,549 +384,578 @@ static void PrintUIntDec(uint16_t val)
 }
 
 
-
-void vMainTimerTask(void *pvParameters)
+// ---------- NEW TASK: WAITING STATE ----------
+void vWaitingTask(void *pvParameters)
 {
-    // Default state is the waiting state
-    currentState = WAITING_ST;
-    waitingPromptShown = 0;
-    countdownInitialised = 0;
-    doneBlinkCount = 0;
-    doneMessageShown = 0;
-    gMinutes = 0;
-    gSeconds = 0;
+    (void) pvParameters;
 
-    // One time UART print message
-    xSemaphoreTake(uart_sem, portMAX_DELAY);
-    Disp2String("\n----------------------Fancy Timer Project-----------------------\n\r");
-    Disp2String("\nAuthors: Jazeb, Mayuran and Anas (Group 13)\n\n\r");
-    Disp2String("The Current State of the FSM is: WAITING. LED2 should be pulsing\n");
-    Disp2String("To move forward, please press PB1 to begin setting a countdown time.\n");
-    xSemaphoreGive(uart_sem);
-    
-    // Input characters
+    // Print banner only once at startup
+    static uint8_t bannerPrinted = 0;
+    static uint8_t oncePrintedPB1Debug = 0;
+
+    for (;;)
+    {
+        if (currentState != WAITING_ST)
+        {
+            // Not in WAITING, just yield a bit
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        // Initial banner (only once after reset)
+        if (!bannerPrinted)
+        {
+            xSemaphoreTake(uart_sem, portMAX_DELAY);
+            Disp2String("\n----------------------Fancy Timer Project-----------------------\n\r");
+            Disp2String("\nAuthors: Jazeb, Mayuran and Anas (Group 13)\n\n\r");
+            Disp2String("The Current State of the FSM is: WAITING. LED2 should be pulsing\n");
+            Disp2String("To move forward, please press PB1 to begin setting a countdown time.\n");
+            xSemaphoreGive(uart_sem);
+
+            bannerPrinted = 1;
+        }
+
+        // LEDs for WAITING state
+        LED0_LAT = 0;
+        LED1_LAT = 0;
+        // LED2 pulsing is handled in Timer2 ISR when currentState == WAITING_ST
+
+        // Show the waiting message only once each time we return to WAITING
+        if (!waitingPromptShown)
+        {
+            xSemaphoreTake(uart_sem, portMAX_DELAY);
+            Disp2String("\n\r[WAITING] Press PB1 to begin setting a countdown time.\n\r");
+            xSemaphoreGive(uart_sem);
+
+            waitingPromptShown = 1;
+        }
+
+        // One-time debug print of PB1 at reset
+        if (!oncePrintedPB1Debug)
+        {
+            xSemaphoreTake(uart_sem, portMAX_DELAY);
+            if (PB1_PORT)
+                Disp2String("\n\r[DEBUG] PB1 at reset: 1 (HIGH)\n\r");
+            else
+                Disp2String("\n\r[DEBUG] PB1 at reset: 0 (LOW)\n\r");
+            xSemaphoreGive(uart_sem);
+
+            oncePrintedPB1Debug = 1;
+        }
+
+        // PB1 click detection (simple debounce as before)
+        if (PB1_PORT == 0)  // button pressed (active low)
+        {
+            vTaskDelay(pdMS_TO_TICKS(50));  // crude debounce
+
+            if (PB1_PORT == 0)
+            {
+                xSemaphoreTake(uart_sem, portMAX_DELAY);
+                Disp2String("\n\r[WAITING] PB1 press detected, moving to TIME_ENTRY.\n\r");
+                xSemaphoreGive(uart_sem);
+
+                // wait for release so we don?t retrigger
+                while (PB1_PORT == 0)
+                {
+                    vTaskDelay(pdMS_TO_TICKS(10));
+                }
+
+                waitingPromptShown = 0;   // so WAITING message reprints next time
+                currentState = STATE_TIME_ENTRY;
+            }
+        }
+
+        // Run quickly for responsiveness
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+
+// ---------- NEW TASK: TIME ENTRY STATE ----------
+void vTimeEntryTask(void *pvParameters)
+{
+    (void) pvParameters;
+
+    // Input characters buffer (same as before)
     char inputBuf[8];
+
+    for (;;)
+    {
+        if (currentState != STATE_TIME_ENTRY)
+        {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        // Stop LED2 pulsing while entering time
+        dutyTicks = 0;
+        LED2_LAT  = 0;
+
+        LED0_LAT = 0;
+        LED1_LAT = 0;
+
+        waitingPromptShown = 0; // so WAITING message runs again next time we enter that state
+
+        xSemaphoreTake(uart_sem, portMAX_DELAY);
+        Disp2String("\n\r[TIME ENTRY] Please enter time as MMSS (e.g., 0130 for 1min 30s), then press ENTER:\n\r> ");
+        xSemaphoreGive(uart_sem);
+
+        // Blocking receive; echoes characters as typed
+        RecvUart(inputBuf, sizeof(inputBuf));
+        inputBuf[sizeof(inputBuf)-1] = '\0';
+
+        // Extract digits only (same logic as before)
+        char digits[5] = {0};
+        int di = 0;
+        for (int i = 0; inputBuf[i] != '\0' && di < 4; i++)
+        {
+            if (isdigit((unsigned char)inputBuf[i]))
+            {
+                digits[di++] = inputBuf[i];
+            }
+        }
+
+        int mm = 0;
+        int ss = 0;
+
+        if (di == 4)
+        {
+            // MMSS
+            mm = (digits[0]-'0')*10 + (digits[1]-'0');
+            ss = (digits[2]-'0')*10 + (digits[3]-'0');
+        }
+        else if (di == 3)
+        {
+            // M SS
+            mm = (digits[0]-'0');
+            ss = (digits[1]-'0')*10 + (digits[2]-'0');
+        }
+        else if (di == 2)
+        {
+            // treat as seconds only
+            mm = 0;
+            ss = (digits[0]-'0')*10 + (digits[1]-'0');
+        }
+        else
+        {
+            // invalid -> default 00:10
+            mm = 0;
+            ss = 10;
+        }
+
+        if (ss > 59) ss = 59;
+
+        gMinutes = (uint16_t)mm;
+        gSeconds = (uint16_t)ss;
+
+        xSemaphoreTake(uart_sem, portMAX_DELAY);
+        Disp2String("\n\r[TIME ENTRY] Time set.\n\r");
+        Disp2String("[TIME ENTRY] Click PB2 and PB3 together to start.\n\r");
+        Disp2String("[TIME ENTRY] Long press PB2+PB3 to reset and re-enter time.\n\r");
+        xSemaphoreGive(uart_sem);
+
+        // Wait here for PB2+PB3 short or long press (same behavior as before)
+        uint16_t comboHoldTicks = 0;
+        uint8_t  comboActive    = 0;
+        const uint16_t COMBO_LONG_PRESS_MS    = 1000; // ~1s long press
+        const uint16_t COMBO_TICK_MS          = 20;
+        const uint16_t COMBO_LONG_PRESS_TICKS = (COMBO_LONG_PRESS_MS / COMBO_TICK_MS);
+
+        for (;;)
+        {
+            // If other tasks changed the state (e.g., somehow aborted), break out
+            if (currentState != STATE_TIME_ENTRY)
+            {
+                break;
+            }
+
+            uint8_t p2 = PB2_PORT;  // pull-up -> 1 = released, 0 = pressed
+            uint8_t p3 = PB3_PORT;
+
+            if ((p2 == 0) && (p3 == 0))
+            {
+                // both pressed
+                if (!comboActive)
+                {
+                    comboActive    = 1;
+                    comboHoldTicks = 0;
+                }
+                else if (comboHoldTicks < 0xFFFF)
+                {
+                    comboHoldTicks++;
+                }
+            }
+            else
+            {
+                if (comboActive)
+                {
+                    // both were pressed and now at least one released
+                    if (comboHoldTicks >= COMBO_LONG_PRESS_TICKS)
+                    {
+                        // Long press: reset time and re-enter
+                        xSemaphoreTake(uart_sem, portMAX_DELAY);
+                        Disp2String("\n\r[TIME ENTRY] Long press PB2+PB3 detected. Resetting time.\n\r");
+                        xSemaphoreGive(uart_sem);
+
+                        gMinutes = 0;
+                        gSeconds = 0;
+                        // stay in STATE_TIME_ENTRY, outer loop will ask again
+                    }
+                    else if (comboHoldTicks > 0)
+                    {
+                        // Short click: start countdown
+                        xSemaphoreTake(uart_sem, portMAX_DELAY);
+                        Disp2String("\n\r[TIME ENTRY] Starting countdown.\n\r");
+                        xSemaphoreGive(uart_sem);
+
+                        countdownInitialised = 0;
+                        currentState         = STATE_COUNTDOWN;
+                    }
+
+                    break;  // exit this inner wait loop after action
+                }
+
+                // no active combo
+                comboActive    = 0;
+                comboHoldTicks = 0;
+            }
+
+            vTaskDelay(pdMS_TO_TICKS(COMBO_TICK_MS));
+        }
+
+        // Outer for(;;) repeats; if state is TIME_ENTRY we re-prompt, if COUNTDOWN we just idle
+    }
+}
+
+
+// ---------- NEW TASK: COUNTDOWN STATE (periodic) ----------
+void vCountdownTask(void *pvParameters)
+{
+    (void) pvParameters;
 
     TickType_t xLastWakeTime = xTaskGetTickCount();
 
-    for(;;)
+    for (;;)
     {
-        // Switch statement for the different states (FSM)
-        switch (currentState)
+        if (currentState != STATE_COUNTDOWN)
         {
-            case WAITING_ST:
+            // when we leave COUNTDOWN, ensure next entry re-initializes
+            countdownInitialised = 0;
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        // Initialize once when we first enter COUNTDOWN
+        if (!countdownInitialised)
+        {
+            LED0_LAT = 0;
+            LED1_LAT = 1;  // start with LED1 on for 1 Hz blink
+            LED2_LAT = 0;  // LED2 brightness via dutyTicks + ADC
+
+            // reset pulsing state for LED2; now LED2 will be driven by ADC logic
+            pulseCounter = 0;
+            dutyStep     = 1;
+
+            xLastWakeTime         = xTaskGetTickCount();
+            countdownTickCounter  = 0;
+            countdownPaused       = 0;
+            pb3HoldTicks          = 0;
+            led2BlinkPhase        = 1;   // start LED2 "on" phase
+            led2BlinkMode         = 1;   // default: blink in countdown
+            showExtraInfo         = 0;   // start with simple time display
+
+            xSemaphoreTake(uart_sem, portMAX_DELAY);
+            Disp2String("\n\r[COUNTDOWN] Countdown started.\n\r");
+            Disp2String("[COUNTDOWN] Click PB3 to pause/resume. Long press PB3 to abort.\n\r");
+            Disp2String("[COUNTDOWN] Type 'i' to toggle extra info, 'b' to toggle LED2 blink/solid.\n\r");
+            xSemaphoreGive(uart_sem);
+
+            countdownInitialised = 1;
+        }
+
+        // Periodic tick: 100 ms
+        vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(COUNTDOWN_TICK_MS));
+
+        // ***** PB3: pause/resume (short click) and abort (long press) *****
+        {
+            uint8_t pb3 = PB3_PORT;  // pull-up: 1 = released, 0 = pressed
+
+            if (pb3 == 0)
             {
-                // LED2 pulsing via Timer2 ISR (dutyTicks auto-updated)
-                // LEDs: LED0 and LED1 off in WAITING
-                LED0_LAT = 0;
-                LED1_LAT = 0;
-
-                // Show the waiting message only once
-                if (!waitingPromptShown)
+                // button held down
+                if (pb3HoldTicks < 0xFFFF)
                 {
-                    xSemaphoreTake(uart_sem, portMAX_DELAY);
-                    Disp2String("\n\r[WAITING] Press PB1 to begin setting a countdown time.\n\r");
-                    xSemaphoreGive(uart_sem);
-
-                    waitingPromptShown = 1;
+                    pb3HoldTicks++;
                 }
-
-                static uint8_t oncePrinted = 0;
-                if (!oncePrinted)
+            }
+            else
+            {
+                // button released
+                if (pb3HoldTicks > 0)
                 {
-                    xSemaphoreTake(uart_sem, portMAX_DELAY);
-                    if (PB1_PORT)
-                        Disp2String("\n\r[DEBUG] PB1 at reset: 1 (HIGH)\n\r");
-                    else
-                        Disp2String("\n\r[DEBUG] PB1 at reset: 0 (LOW)\n\r");
-                    xSemaphoreGive(uart_sem);
-
-                    oncePrinted = 1;
-                }
-
-               
-                if (PB1_PORT == 0)     // button pressed
-                {
-                    // crude debounce: wait a bit, then check again
-                    vTaskDelay(pdMS_TO_TICKS(50));
-
-                    if (PB1_PORT == 0) // still pressed after 50 ms
+                    if (pb3HoldTicks >= PB3_LONG_PRESS_TICKS)
                     {
+                        // Long press: abort to 0:00 and go to DONE
+                        gMinutes = 0;
+                        gSeconds = 0;
+
                         xSemaphoreTake(uart_sem, portMAX_DELAY);
-                        Disp2String("\n\r[WAITING] PB1 press detected, moving to TIME_ENTRY.\n\r");
+                        Disp2String("\n\r[COUNTDOWN] Long press PB3 detected. Aborting timer to 00:00.\n\r");
                         xSemaphoreGive(uart_sem);
 
-                        // wait for release so we don't immediately retrigger
-                        while (PB1_PORT == 0)
-                        {
-                            vTaskDelay(pdMS_TO_TICKS(10));
-                        }
+                        countdownInitialised = 0;
+                        doneBlinkCount       = 0;
+                        doneMessageShown     = 0;
+                        currentState         = STATE_DONE;
 
-                        waitingPromptShown = 0;   // so we reprint message next time we come back
-                        currentState = STATE_TIME_ENTRY;
+                        pb3HoldTicks = 0;
+                        continue; // next loop iteration will see STATE_DONE and skip logic
                     }
+                    else
+                    {
+                        // Short click: toggle pause/resume
+                        countdownPaused ^= 1;
+
+                        xSemaphoreTake(uart_sem, portMAX_DELAY);
+                        if (countdownPaused)
+                        {
+                            Disp2String("\n\r[COUNTDOWN] Paused.\n\r");
+                        }
+                        else
+                        {
+                            Disp2String("\n\r[COUNTDOWN] Resumed.\n\r");
+                        }
+                        xSemaphoreGive(uart_sem);
+                    }
+
+                    pb3HoldTicks = 0;
                 }
-
-                // Run this state quickly to feel responsive
-                vTaskDelay(pdMS_TO_TICKS(10));
-                break;
             }
+        }
 
-            case STATE_TIME_ENTRY:
+        // ***** Handle UART commands 'i' and 'b' (non-blocking) *****
+        if (RXFlag)
+        {
+            char c = received_char;
+            RXFlag = 0;      // clear flag so we see the next char
+
+            if (c == 'i')
             {
-                // Stop LED2 pulsing while entering time
-                dutyTicks = 0;
-                LED2_LAT  = 0;
-
-                LED0_LAT = 0;
-                LED1_LAT = 0;
-
-                waitingPromptShown = 0; // so WAITING message runs again next time we enter
+                // toggle extra info display mode
+                showExtraInfo ^= 1;
+            }
+            else if (c == 'b')
+            {
+                // toggle LED2 mode (blink vs solid)
+                led2BlinkMode ^= 1;
 
                 xSemaphoreTake(uart_sem, portMAX_DELAY);
-                Disp2String("\n\r[TIME ENTRY] Please enter time as MMSS (e.g., 0130 for 1min 30s), then press ENTER:\n\r> ");
-                xSemaphoreGive(uart_sem);
-
-                // Blocking receive; echoes characters as typed
-                RecvUart(inputBuf, sizeof(inputBuf));
-                inputBuf[sizeof(inputBuf)-1] = '\0';
-
-                // Extract digits only
-                char digits[5] = {0};
-                int di = 0;
-                for (int i = 0; inputBuf[i] != '\0' && di < 4; i++)
+                if (led2BlinkMode)
                 {
-                    if (isdigit((unsigned char)inputBuf[i]))
-                    {
-                        digits[di++] = inputBuf[i];
-                    }
-                }
-
-                int mm = 0;
-                int ss = 0;
-
-                if (di == 4)
-                {
-                    // MMSS
-                    mm = (digits[0]-'0')*10 + (digits[1]-'0');
-                    ss = (digits[2]-'0')*10 + (digits[3]-'0');
-                }
-                else if (di == 3)
-                {
-                    // M SS
-                    mm = (digits[0]-'0');
-                    ss = (digits[1]-'0')*10 + (digits[2]-'0');
-                }
-                else if (di == 2)
-                {
-                    // treat as seconds only
-                    mm = 0;
-                    ss = (digits[0]-'0')*10 + (digits[1]-'0');
+                    Disp2String("\n\r[COUNTDOWN] LED2 set to BLINK mode.\n\r");
                 }
                 else
                 {
-                    // invalid -> default 00:10
-                    mm = 0;
-                    ss = 10;
+                    Disp2String("\n\r[COUNTDOWN] LED2 set to SOLID mode.\n\r");
                 }
-
-                if (ss > 59) ss = 59;
-
-                gMinutes = (uint16_t)mm;
-                gSeconds = (uint16_t)ss;
-
-                // Do NOT start countdown immediately.
-                xSemaphoreTake(uart_sem, portMAX_DELAY);
-                Disp2String("\n\r[TIME ENTRY] Time set.\n\r");
-                Disp2String("[TIME ENTRY] Click PB2 and PB3 together to start.\n\r");
-                Disp2String("[TIME ENTRY] Long press PB2+PB3 to reset and re-enter time.\n\r");
                 xSemaphoreGive(uart_sem);
+            }
+        }
 
-                // Wait here for PB2+PB3 short or long press
-                {
-                    uint16_t comboHoldTicks = 0;
-                    uint8_t  comboActive    = 0;
-                    const uint16_t COMBO_LONG_PRESS_MS    = 1000; // ~1s long press
-                    const uint16_t COMBO_TICK_MS          = 20;
-                    const uint16_t COMBO_LONG_PRESS_TICKS = (COMBO_LONG_PRESS_MS / COMBO_TICK_MS);
+        // ***** ADC: read potentiometer and update LED2 brightness *****
+        {
+            uint16_t adcVal = do_ADC();   // 0..1023 from AN5
+            lastAdcVal = adcVal;
 
-                    for (;;)
-                    {
-                        uint8_t p2 = PB2_PORT;  // assuming pull-up -> 1 = released, 0 = pressed
-                        uint8_t p3 = PB3_PORT;
-
-                        if ((p2 == 0) && (p3 == 0))
-                        {
-                            // both pressed
-                            if (!comboActive)
-                            {
-                                comboActive    = 1;
-                                comboHoldTicks = 0;
-                            }
-                            else if (comboHoldTicks < 0xFFFF)
-                            {
-                                comboHoldTicks++;
-                            }
-                        }
-                        else
-                        {
-                            if (comboActive)
-                            {
-                                // both were pressed and now at least one released
-                                if (comboHoldTicks >= COMBO_LONG_PRESS_TICKS)
-                                {
-                                    // Long press: reset time and re-enter
-                                    xSemaphoreTake(uart_sem, portMAX_DELAY);
-                                    Disp2String("\n\r[TIME ENTRY] Long press PB2+PB3 detected. Resetting time.\n\r");
-                                    xSemaphoreGive(uart_sem);
-
-                                    gMinutes = 0;
-                                    gSeconds = 0;
-                                    // break: outer loop will re-run STATE_TIME_ENTRY and ask again
-                                }
-                                else if (comboHoldTicks > 0)
-                                {
-                                    // Short click: start countdown
-                                    xSemaphoreTake(uart_sem, portMAX_DELAY);
-                                    Disp2String("\n\r[TIME ENTRY] Starting countdown.\n\r");
-                                    xSemaphoreGive(uart_sem);
-
-                                    countdownInitialised = 0;
-                                    currentState = STATE_COUNTDOWN;
-                                }
-
-                                break;  // exit wait loop after action
-                            }
-
-                            // no active combo
-                            comboActive    = 0;
-                            comboHoldTicks = 0;
-                        }
-
-                        vTaskDelay(pdMS_TO_TICKS(COMBO_TICK_MS));
-                    }
-                }
-
-                break;
+            // Map ADC -> duty in [0, DUTY_MAX_TICKS]
+            led2DutyFromADC = (uint32_t)adcVal * DUTY_MAX_TICKS / 1023u;
+            if (led2DutyFromADC > DUTY_MAX_TICKS)
+            {
+                led2DutyFromADC = DUTY_MAX_TICKS;
             }
 
-
-            case STATE_COUNTDOWN:
+            // Use current blink phase to decide ON/OFF for LED2
+            if (led2BlinkMode)
             {
-                // Initialize once when we first enter
-                if (!countdownInitialised)
+                if (led2BlinkPhase)
                 {
-                    LED0_LAT = 0;
-                    LED1_LAT = 1;  // start with LED1 on for 1 Hz blink
-                    LED2_LAT = 0;  // LED2 brightness via dutyTicks + ADC
-
-                    // reset pulsing state for LED2; now LED2 will be driven by ADC logic
-                    pulseCounter = 0;
-                    dutyStep     = 1;
-
-                    xLastWakeTime = xTaskGetTickCount();
-                    countdownTickCounter = 0;
-                    countdownPaused      = 0;
-                    pb3HoldTicks         = 0;
-                    led2BlinkPhase       = 1;   // start LED2 "on" phase
-                    led2BlinkMode        = 1;   // default: blink in countdown
-
-                    xSemaphoreTake(uart_sem, portMAX_DELAY);
-                    Disp2String("\n\r[COUNTDOWN] Countdown started.\n\r");
-                    Disp2String("[COUNTDOWN] Click PB3 to pause/resume. Long press PB3 to abort.\n\r");
-                    Disp2String("[COUNTDOWN] Type 'i' to toggle extra info, 'b' to toggle LED2 blink/solid.\n\r");
-                    xSemaphoreGive(uart_sem);
-
-                    countdownInitialised = 1;
+                    dutyTicks = led2DutyFromADC;   // LED2 on at chosen brightness
                 }
-
-                // Run this state every COUNTDOWN_TICK_MS (e.g., 100 ms)
-                vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(COUNTDOWN_TICK_MS));
-
-                // --- PB3: pause/resume (short click) and abort (long press) ---
+                else
                 {
-                    uint8_t pb3 = PB3_PORT;  // assuming pull-up: 1 = released, 0 = pressed
+                    dutyTicks = 0;                 // LED2 off
+                }
+            }
+            else
+            {
+                // Solid: LED2 always at chosen brightness
+                dutyTicks = led2DutyFromADC;
+            }
+        }
 
-                    if (pb3 == 0)
+        // ***** 1 second bookkeeping *****
+        countdownTickCounter++;
+        if (countdownTickCounter >= (1000 / COUNTDOWN_TICK_MS))
+        {
+            countdownTickCounter = 0;
+
+            // Only decrement and blink when not paused
+            if (!countdownPaused)
+            {
+                // Decrement time
+                if (gMinutes == 0 && gSeconds == 0)
+                {
+                    // already at zero, go to DONE
+                    currentState     = STATE_DONE;
+                    doneBlinkCount   = 0;
+                    doneMessageShown = 0;
+                }
+                else
+                {
+                    if (gSeconds == 0)
                     {
-                        // button held down
-                        if (pb3HoldTicks < 0xFFFF)
+                        if (gMinutes > 0)
                         {
-                            pb3HoldTicks++;
+                            gMinutes--;
+                            gSeconds = 59;
                         }
                     }
                     else
                     {
-                        // button released
-                        if (pb3HoldTicks > 0)
-                        {
-                            if (pb3HoldTicks >= PB3_LONG_PRESS_TICKS)
-                            {
-                                // Long press: abort to 0:00 and go to DONE
-                                gMinutes = 0;
-                                gSeconds = 0;
-
-                                xSemaphoreTake(uart_sem, portMAX_DELAY);
-                                Disp2String("\n\r[COUNTDOWN] Long press PB3 detected. Aborting timer to 00:00.\n\r");
-                                xSemaphoreGive(uart_sem);
-
-                                countdownInitialised = 0;
-                                doneBlinkCount       = 0;
-                                doneMessageShown     = 0;
-                                currentState         = STATE_DONE;
-
-                                pb3HoldTicks = 0;
-                                break; // leave COUNTDOWN state
-                            }
-                            else
-                            {
-                                // Short click: toggle pause/resume
-                                countdownPaused ^= 1;
-
-                                xSemaphoreTake(uart_sem, portMAX_DELAY);
-                                if (countdownPaused)
-                                {
-                                    Disp2String("\n\r[COUNTDOWN] Paused.\n\r");
-                                }
-                                else
-                                {
-                                    Disp2String("\n\r[COUNTDOWN] Resumed.\n\r");
-                                }
-                                xSemaphoreGive(uart_sem);
-                            }
-
-                            pb3HoldTicks = 0;
-                        }
-                    }
-                }
-
-                // --- Handle UART commands 'i' and 'b' (non-blocking) ---
-                if (RXFlag)
-                {
-                    char c = received_char;
-                    RXFlag = 0;      // clear flag so we see the next char
-
-                    if (c == 'i')
-                    {
-                        // toggle extra info display mode
-                        showExtraInfo ^= 1;
-                    }
-                    else if (c == 'b')
-                    {
-                        // toggle LED2 mode (blink vs solid)
-                        led2BlinkMode ^= 1;
-
-                        xSemaphoreTake(uart_sem, portMAX_DELAY);
-                        if (led2BlinkMode)
-                        {
-                            Disp2String("\n\r[COUNTDOWN] LED2 set to BLINK mode.\n\r");
-                        }
-                        else
-                        {
-                            Disp2String("\n\r[COUNTDOWN] LED2 set to SOLID mode.\n\r");
-                        }
-                        xSemaphoreGive(uart_sem);
-                    }
-                }
-
-                // --- ADC: read potentiometer and update LED2 brightness (always) ---
-                {
-                    uint16_t adcVal = do_ADC();   // 0..1023 from AN5
-                    lastAdcVal = adcVal;
-
-                    // Map ADC -> duty in [0, DUTY_MAX_TICKS]
-                    led2DutyFromADC = (uint32_t)adcVal * DUTY_MAX_TICKS / 1023u;
-                    if (led2DutyFromADC > DUTY_MAX_TICKS)
-                    {
-                        led2DutyFromADC = DUTY_MAX_TICKS;
+                        gSeconds--;
                     }
 
-                    // Use current blink phase to decide ON/OFF for LED2
+                    // Blink LED1 at 1 Hz: toggle every second
+                    LED1_LAT ^= 1;  // 1s on / 1s off
+
+                    // LED2 blink phase: toggle once each second if in blink mode
                     if (led2BlinkMode)
                     {
-                        if (led2BlinkPhase)
-                        {
-                            dutyTicks = led2DutyFromADC;   // LED2 on at chosen brightness
-                        }
-                        else
-                        {
-                            dutyTicks = 0;                 // LED2 off
-                        }
-                    }
-                    else
-                    {
-                        // Solid: LED2 always at chosen brightness
-                        dutyTicks = led2DutyFromADC;
+                        led2BlinkPhase ^= 1;
                     }
                 }
-
-                // --- 1 second bookkeeping ---
-                countdownTickCounter++;
-                if (countdownTickCounter >= (1000 / COUNTDOWN_TICK_MS))
-                {
-                    countdownTickCounter = 0;
-
-                    // Only decrement and blink when not paused
-                    if (!countdownPaused)
-                    {
-                        // Decrement time
-                        if (gMinutes == 0 && gSeconds == 0)
-                        {
-                            // already at zero, go to DONE
-                            currentState     = STATE_DONE;
-                            doneBlinkCount   = 0;
-                            doneMessageShown = 0;
-                        }
-                        else
-                        {
-                            if (gSeconds == 0)
-                            {
-                                if (gMinutes > 0)
-                                {
-                                    gMinutes--;
-                                    gSeconds = 59;
-                                }
-                            }
-                            else
-                            {
-                                gSeconds--;
-                            }
-
-                            // Blink LED1 at 1 Hz: toggle every second
-                            LED1_LAT ^= 1;  // 1s on / 1s off
-
-                            // LED2 blink phase: toggle once each second if in blink mode
-                            if (led2BlinkMode)
-                            {
-                                led2BlinkPhase ^= 1;
-                            }
-                        }
-                    }
-
-                    // --- Print time (simple or extended) ---
-                    if (!showExtraInfo)
-                    {
-                        // simple view: time only
-                        PrintTimeUART(gMinutes, gSeconds);
-                    }
-                    else
-                    {
-                        // extended view: time + ADC + duty + mode
-                        xSemaphoreTake(uart_sem, portMAX_DELAY);
-                        Disp2String("\n\rTime remaining (extended): ");
-                        xSemaphoreGive(uart_sem);
-
-                        PrintTimeUART(gMinutes, gSeconds);
-
-                        xSemaphoreTake(uart_sem, portMAX_DELAY);
-                        Disp2String(" | ADC = ");
-                        PrintUIntDec(lastAdcVal);
-
-                        Disp2String(" | LED2 dutyTicks = ");
-                        PrintUIntDec(led2DutyFromADC);
-
-                        Disp2String(" | LED2 mode = ");
-                        if (led2BlinkMode)
-                        {
-                            Disp2String("BLINK");
-                        }
-                        else
-                        {
-                            Disp2String("SOLID");
-                        }
-
-                        xSemaphoreGive(uart_sem);
-                    }
-
-                    // Reached 0?
-                    if (!countdownPaused && gMinutes == 0 && gSeconds == 0)
-                    {
-                        currentState     = STATE_DONE;
-                        doneBlinkCount   = 0;
-                        doneMessageShown = 0;
-                    }
-                }
-
-                break;
             }
 
-
-            case STATE_PAUSED:
-                // Not used; pause handled inside STATE_COUNTDOWN with countdownPaused flag.
-                vTaskDelay(pdMS_TO_TICKS(100));
-                break;
-
-            case STATE_DONE:
+            // --- Print time (simple or extended) ---
+            if (!showExtraInfo)
             {
-                // After the timer has elapsed, the terminal should message that the countdown is done,
-                // and LED0 and LED1 should blink rapidly in an alternating fashion.
-                // LED2 should remain solidly on. After 5 seconds , return to WAITING.
+                // simple view: time only
+                PrintTimeUART(gMinutes, gSeconds);
+            }
+            else
+            {
+                // extended view: time + ADC + duty + mode
+                xSemaphoreTake(uart_sem, portMAX_DELAY);
+                Disp2String("\n\rTime remaining (extended): ");
+                xSemaphoreGive(uart_sem);
 
-                if (!doneMessageShown)
+                PrintTimeUART(gMinutes, gSeconds);
+
+                xSemaphoreTake(uart_sem, portMAX_DELAY);
+                Disp2String(" | ADC = ");
+                PrintUIntDec(lastAdcVal);
+
+                Disp2String(" | LED2 dutyTicks = ");
+                PrintUIntDec(led2DutyFromADC);
+
+                Disp2String(" | LED2 mode = ");
+                if (led2BlinkMode)
                 {
-                    xSemaphoreTake(uart_sem, portMAX_DELAY);
-                    Disp2String("\n\r[DONE] Countdown complete! Timer reached 00:00.\n\r");
-                    xSemaphoreGive(uart_sem);
-
-                    doneMessageShown = 1;
-                    doneBlinkCount = 0;
-
-                    LED0_LAT = 1;
-                    LED1_LAT = 0;
-
-                    // LED2: solid, brightness from ADC (via PWM)
-                    led2BlinkMode = 0;  // solid mode
+                    Disp2String("BLINK");
+                }
+                else
+                {
+                    Disp2String("SOLID");
                 }
 
-                // Alternate LED0 and LED1 quickly (100 ms period)
-                LED0_LAT ^= 1;
-                LED1_LAT = !LED0_LAT;
-                
-                // LED2 brightness still controlled by potentiometer (solid)
-                {
-                    uint16_t adcVal = do_ADC();
-                    lastAdcVal = adcVal;
-                    led2DutyFromADC = (uint32_t)adcVal * DUTY_MAX_TICKS / 1023u;
-                    if (led2DutyFromADC > DUTY_MAX_TICKS)
-                    {
-                        led2DutyFromADC = DUTY_MAX_TICKS;
-                    }
-
-                    // In DONE, LED2 should be solid at this brightness
-                    dutyTicks = led2DutyFromADC;
-                }
-
-                vTaskDelay(pdMS_TO_TICKS(100));
-                doneBlinkCount++;
-
-                // 100ms * 50 = 5s
-                if (doneBlinkCount >= 50)
-                {
-                    // Turn LEDs off and go back to waiting
-                    LED0_LAT = 0;
-                    LED1_LAT = 0;
-                    LED2_LAT = 0;
-
-                    gMinutes = 0;
-                    gSeconds = 0;
-                    countdownInitialised = 0;
-
-                    // reset pulsing variables for WAITING_ST (for LED2 pulsing)
-                    dutyTicks   = 0;
-                    dutyStep    = 1;
-                    pulseCounter = 0;
-
-                    currentState = WAITING_ST;
-                    waitingPromptShown = 0;
-                }
-
-                break;
+                xSemaphoreGive(uart_sem);
             }
 
+            // Reached 0?
+            if (!countdownPaused && gMinutes == 0 && gSeconds == 0)
+            {
+                currentState     = STATE_DONE;
+                doneBlinkCount   = 0;
+                doneMessageShown = 0;
+            }
+        }
+    }
+}
 
-            default:
-                vTaskDelay(pdMS_TO_TICKS(200));
-                break;
+
+// ---------- NEW TASK: DONE STATE (periodic) ----------
+void vDoneTask(void *pvParameters)
+{
+    (void) pvParameters;
+
+    for (;;)
+    {
+        if (currentState != STATE_DONE)
+        {
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+
+        // After the timer has elapsed, the terminal should message that the countdown is done,
+        // and LED0 and LED1 should blink rapidly in an alternating fashion.
+        // LED2 should remain solidly on. After 5 seconds, return to WAITING.
+
+        if (!doneMessageShown)
+        {
+            xSemaphoreTake(uart_sem, portMAX_DELAY);
+            Disp2String("\n\r[DONE] Countdown complete! Timer reached 00:00.\n\r");
+            xSemaphoreGive(uart_sem);
+
+            doneMessageShown = 1;
+            doneBlinkCount   = 0;
+
+            LED0_LAT = 1;
+            LED1_LAT = 0;
+
+            // LED2: solid, brightness from ADC (via PWM)
+            led2BlinkMode = 0;  // solid mode
+        }
+
+        // Alternate LED0 and LED1 quickly (100 ms period)
+        LED0_LAT ^= 1;
+        LED1_LAT = !LED0_LAT;
+
+        // LED2 brightness still controlled by potentiometer (solid)
+        {
+            uint16_t adcVal = do_ADC();
+            lastAdcVal = adcVal;
+            led2DutyFromADC = (uint32_t)adcVal * DUTY_MAX_TICKS / 1023u;
+            if (led2DutyFromADC > DUTY_MAX_TICKS)
+            {
+                led2DutyFromADC = DUTY_MAX_TICKS;
+            }
+
+            // In DONE, LED2 should be solid at this brightness
+            dutyTicks = led2DutyFromADC;
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(100));
+        doneBlinkCount++;
+
+        // 100ms * 50 = 5s
+        if (doneBlinkCount >= 50)
+        {
+            // Turn LEDs off and go back to waiting
+            LED0_LAT = 0;
+            LED1_LAT = 0;
+            LED2_LAT = 0;
+
+            gMinutes = 0;
+            gSeconds = 0;
+            countdownInitialised = 0;
+
+            // reset pulsing variables for WAITING_ST (for LED2 pulsing)
+            dutyTicks    = 0;
+            dutyStep     = 1;
+            pulseCounter = 0;
+
+            waitingPromptShown = 0;
+            currentState       = WAITING_ST;
         }
     }
 }
@@ -969,10 +1006,63 @@ int main(void) {
 
     uart_sem = xSemaphoreCreateMutex();
     
-    // Higher priority than LED task 
-    xTaskCreate( vMainTimerTask, "MainTimerTask", TASK_STACK_SIZE, NULL, 2, NULL );
+    // ---------- FSM / global state initialization (moved from old vMainTimerTask) ----------
+    currentState          = WAITING_ST;
+    waitingPromptShown    = 0;
+    countdownInitialised  = 0;
+    doneBlinkCount        = 0;
+    doneMessageShown      = 0;
+    gMinutes              = 0;
+    gSeconds              = 0;
 
-    
+    pwmCounter            = 0;
+    dutyTicks             = 0;
+    dutyStep              = 1;
+    pulseCounter          = 0;
+
+    showExtraInfo         = 0;
+    led2BlinkMode         = 1; // blink in countdown by default
+    led2DutyFromADC       = 0;
+    led2BlinkPhase        = 1;
+
+    countdownPaused       = 0;
+    countdownTickCounter  = 0;
+    pb3HoldTicks          = 0;
+    lastAdcVal            = 0;
+
+    // ---------- Create tasks (NOW USING MULTIPLE TASKS) ----------
+    // WAITING + PB1 (aperiodic)
+    xTaskCreate( vWaitingTask,
+                 "WaitTask",
+                 TASK_STACK_SIZE,
+                 NULL,
+                 2,
+                 NULL );
+
+    // TIME ENTRY via UART + PB2+PB3 combo (aperiodic)
+    xTaskCreate( vTimeEntryTask,
+                 "TimeEntryTask",
+                 TASK_STACK_SIZE,
+                 NULL,
+                 2,
+                 NULL );
+
+    // COUNTDOWN core timing + ADC + PB3 pause/abort + 'i'/'b' (periodic)
+    xTaskCreate( vCountdownTask,
+                 "CountdownTask",
+                 TASK_STACK_SIZE,
+                 NULL,
+                 3,     // slightly higher priority so timing is solid
+                 NULL );
+
+    // DONE state LEDs + LED2 solid via ADC, timeout back to WAITING (periodic)
+    xTaskCreate( vDoneTask,
+                 "DoneTask",
+                 TASK_STACK_SIZE,
+                 NULL,
+                 2,
+                 NULL );
+
     vTaskStartScheduler();
     
     for(;;);
