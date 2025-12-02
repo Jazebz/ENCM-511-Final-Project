@@ -1,8 +1,17 @@
 /*
  * File:   main.c
- * Author: ENCM 511
+ * Author: 
+ * 
+ * Jazeb Ahmad Zafar
+ * Anas Chowdhury
+ * Mayuran Muralitharan
  *
- * Created on Oct 22, 2025
+ * Created on November 20th, 2025
+ * 
+ * Project Description: 
+ * This project is a working implementation of a FreeRTOS based finite state machine running on PIC24 hardware using MPlab. 
+ * The system acts as a countdown timer controlled by different push buttons, a potentiometer, UART terminal input, and three LEDs with PWM.
+ * 
  */
 // FSEC
 #pragma config BWRP = OFF    //Boot Segment Write-Protect bit->Boot Segment may be written
@@ -63,39 +72,40 @@
 #include <xc.h>
 #include <stdlib.h>
 #include <ctype.h>
-#include <stdint.h>   // for uint32_t
+// For uint_32t
+#include <stdint.h>   
 
 #define TASK_STACK_SIZE 200
 #define TASK_PRIORITY 5
 
-// Pin defines (per your mapping)
-// LED0: RB6 pin 15 (post-countdown alternating with LED1)
-#define LED0_LAT   LATBbits.LATB6
-#define LED0_TRIS  TRISBbits.TRISB6
+// Pin defines
+// LED0 is connected to RB6 pin 15 
+#define LED0_LAT LATBbits.LATB6
+#define LED0_TRIS TRISBbits.TRISB6
 
-// LED1: RB5 pin 14 (COUNTDOWN blink, DONE alternating)
-#define LED1_LAT   LATBbits.LATB5
-#define LED1_TRIS  TRISBbits.TRISB5
+// LED1 is connected RB5 pin 14 
+#define LED1_LAT LATBbits.LATB5
+#define LED1_TRIS TRISBbits.TRISB5
 
-// LED2: RB7 pin 16 (WAITING pulsing, variable brightness via ADC)
-#define LED2_LAT   LATBbits.LATB7
-#define LED2_TRIS  TRISBbits.TRISB7
+// LED2 RB7 pin 16 pulsing & waiting
+#define LED2_LAT LATBbits.LATB7
+#define LED2_TRIS TRISBbits.TRISB7
 
-// PB1 pull up button
-#define PB1_PORT   PORTAbits.RA4
-#define PB1_TRIS   TRISAbits.TRISA4
+// PB1 is a button with internal pull up 
+#define PB1_PORT PORTAbits.RA4
+#define PB1_TRIS TRISAbits.TRISA4
 
-// PB2
-#define PB2_PORT   PORTBbits.RB8
-#define PB2_TRIS   TRISBbits.TRISB8
+// PB2 is a button with internal pull up
+#define PB2_PORT PORTBbits.RB8
+#define PB2_TRIS TRISBbits.TRISB8
 
-// PB3 (wired to RB9 now)
-#define PB3_PORT   PORTBbits.RB9
-#define PB3_TRIS   TRISBbits.TRISB9
+// PB3 also has internal pull up
+#define PB3_PORT PORTBbits.RB9
+#define PB3_TRIS TRISBbits.TRISB9
 
 
 
-// Puts the states in enums to make it non changeable
+// The states are in enums for ease of viewing the state.
 typedef enum {
     WAITING_ST = 0,
     STATE_TIME_ENTRY,
@@ -104,142 +114,107 @@ typedef enum {
     STATE_DONE
 } TimerState_t;
 
-// Default state is set below
+// Default state is below
 static TimerState_t currentState = WAITING_ST;
 
-// ---------- Timer2 led pulsing ----------
+// Variables for the pwm counter
 volatile uint16_t pwmCounter = 0;
-// How many ticks on during the duty (percentage of total) for LED2
+// How many ticks on during the duty for LED2
 volatile uint16_t dutyTicks = 0; 
 
-// pulsing parameters (used for LED2 in WAITING)
-volatile int8_t   dutyStep = 1;        
+// pulsing parameters for LED2 waiting
+volatile int8_t dutyStep = 1;        
 
-// Constants for PWM behaviour
-// 5-tick PWM period to avoid visible flicker (Timer2 @ 1 kHz)
+//Constants for PWM behaviour
+// We set a 5 tick PWM period to avoid any flicker, we used timer 2 @ 1kHz
 #define PWM_PERIOD_TICKS 5
 #define DUTY_MIN_TICKS 0
-// Same as period ticks; can change for max brightness or separation of timing
+
+// This is the same value as period ticks
 #define DUTY_MAX_TICKS PWM_PERIOD_TICKS
 
-// How often does brightness change (ms steps via Timer2 1ms tick)
-// Slightly slower pulsing
+// We define slightly slower pulsing here
 #define PULSING_STEP_TICKS 150
 
 volatile uint16_t pulseCounter = 0;  
 
-// So the waiting prompt is shown only once
+// variable to check if waiting prompt has been shown already
 static uint8_t waitingPromptShown = 0;
 
-// Countdown time variables
+// variables for the countdown timer
 static uint16_t gMinutes = 0;
 static uint16_t gSeconds = 0;
 static uint8_t  countdownInitialised = 0;
 
-// from uart.c 
+// extern variables from the uart.c file
 extern uint8_t received_char;
 extern uint8_t RXFlag;
 
-// State timing
+// these are for state timing
 static uint16_t doneBlinkCount = 0;
 static uint8_t  doneMessageShown = 0;
 
 // LED2 stuff
 static uint8_t showExtraInfo = 0;  
-static uint8_t led2BlinkMode = 1;    // 1 = blink, 0 = solid
+// for below -> 1 is blinking mode and 0 is solid  
+static uint8_t led2BlinkMode = 1;
 
-// ADC Pwm 
+// ADC PWM 
 static uint16_t led2DutyFromADC = 0;
 static uint8_t  led2BlinkPhase  = 1; // start LED2 "on" phase in countdown
 
-// countdown and button states 
-#define COUNTDOWN_TICK_MS       100 // internal tick for countdown state
-#define PB3_LONG_PRESS_MS       1200 // ~1.2s long press for abort
+// button states and countdown
+
+// internal tick for countdown state
+#define COUNTDOWN_TICK_MS       100 
+// this is approximately 1.2s long press for abort
+#define PB3_LONG_PRESS_MS       1200 
 #define PB3_LONG_PRESS_TICKS    (PB3_LONG_PRESS_MS / COUNTDOWN_TICK_MS)
 
 static uint8_t  countdownPaused      = 0;
 static uint16_t countdownTickCounter = 0;
 static uint16_t pb3HoldTicks         = 0;
 
-// for i (extended info mode)
+// for i -> information mode
 static uint16_t lastAdcVal = 0;
 
 
-
+// Uart semaphore
 SemaphoreHandle_t uart_sem;
-
-// PB1 checker (still available if you want to use it later)
-static uint8_t CheckPB1Click(void)
-{
-    // Simple software sample this every call
-    // click = low, release = high
-
-    static uint8_t stable = 1;
-    static uint8_t lastStable = 1;
-    // to hold and check value
-    static uint8_t cnt = 0;
-
-    uint8_t raw = PB1_PORT;
-
-    if (raw == stable)
-    {
-        cnt = 0;
-    }
-    else
-    {
-        cnt++;
-        // 30 ms
-        if (cnt >= 3)
-        {
-            lastStable = stable;
-            stable     = raw;
-            cnt        = 0;
-        }
-    }
-
-    // check release
-    if (lastStable == 0 && stable == 1)
-    {
-        // returns true
-        return 1;
-    }
-
-    return 0;
-}
 
 
 void InitTimer2ForPWM(void)
 {
     /* 
-     * Timer setup for the LED pulsing
+     * This function is setting up timer 2 for LED
      */
     
     // Turn off Timer2
     T2CONbits.TON = 0;      
     T2CONbits.TCS = 0;
-    // Set the prescaler to 1:8 per datasheet
+    // Setting the prescaler to 1:8, from the datasheet
     T2CONbits.TCKPS = 0b01;
     
-    // Clear timer
+    // Clear timer 2
     TMR2 = 0;
-    // Value for 1ms period (Fcy=16MHz, prescale=8)
+    // Value for 1ms period, uses -> Fcy = 16MHz, prescaler = 8)
     PR2 = 249;              
 
     // Clear and enable the interrupts
-    IFS0bits.T2IF = 0; //Clear
+    IFS0bits.T2IF = 0;//Clear
     IEC0bits.T2IE = 1; //Enable      
-    IPC1bits.T2IP = 3; //Priority
+    IPC1bits.T2IP = 3;//Priority
     
     //Turn on
     T2CONbits.TON = 1;
 }
 
-
+// FreeRTOS requirement due to IDLE 1 define up above
 void vApplicationIdleHook( void )
 {
 }
-/*-----------------------------------------------------------*/
 
+// Same as above, required by FreeRTOS
 void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
 {
 	( void ) pcTaskName;
@@ -252,36 +227,23 @@ void vApplicationStackOverflowHook( TaskHandle_t pxTask, char *pcTaskName )
 	for( ;; );
 }
 
+
 static int counter = 0;
 
 
-// ---------- FreeRTOS task prototypes (NEW) ----------
+// FreeRTOS task prototypes
 void vWaitingTask(void *pvParameters);
 void vTimeEntryTask(void *pvParameters);
 void vCountdownTask(void *pvParameters);
 void vDoneTask(void *pvParameters);
 
-
-/* Test task for reference
-void vTask1(void *pvParameters)
-{
-    for(;;)
-    {
-        xSemaphoreTake(uart_sem, portMAX_DELAY);
-        Disp2String("hello from Task 1\n\r");
-        xSemaphoreGive(uart_sem);
-        
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-*/
-
+// Interrupt function
 void __attribute__((interrupt, no_auto_psv)) _T2Interrupt(void)
 {   
     // Flag clear
     IFS0bits.T2IF = 0;
     
-    // LED2: always gen pwm for LED2 (variable brightness or pulsing)
+    // LED2 always generates pwm for LED2 variable brightness and pulsing
     if (pwmCounter < dutyTicks)
     {   
         LED2_LAT = 1;   
@@ -297,86 +259,97 @@ void __attribute__((interrupt, no_auto_psv)) _T2Interrupt(void)
         pwmCounter = 0;
     }
 
-    // auto pulse LED2 when waiting
+    // pulse LED2 regularly when waiting
     if (currentState == WAITING_ST)
     {
-        // Pulsing 
+        // Pulsing code
         pulseCounter++;
         if (pulseCounter >= PULSING_STEP_TICKS)
         {
             pulseCounter = 0;
 
-            // Adjust duty by one step
+            // Adjust duty by one (+/-)
             dutyTicks += dutyStep;
 
-            // Reverse at bounds
+            // Reverse the duty tick direction when it hits the limits
             if (dutyTicks >= DUTY_MAX_TICKS)
             {
                 dutyTicks = DUTY_MAX_TICKS;
-                // dimming
+                // dimming is on
                 dutyStep = -1;  
             }
             else if (dutyTicks <= DUTY_MIN_TICKS)
             {
                 dutyTicks = DUTY_MIN_TICKS;
-                // brightening
+                // brightening is on
                 dutyStep = 1;  
             }
         }
     }
 }
 
-// Print command for time
+// Print command for the time
 static void PrintTimeUART(uint16_t minutes, uint16_t seconds)
 {
-    // Protect UART with the sephamore :)
+    // Protect UART with the semaphore :)
     xSemaphoreTake(uart_sem, portMAX_DELAY);
 
-    // Show time 
+    // Show the time 
     Disp2String("\n\rTime remaining: ");
 
-    // Minutes tens and ones
+    // Tens and ones for the minutes
     XmitUART2((minutes / 10) + '0', 1);
     XmitUART2((minutes % 10) + '0', 1);
 
-    // Colon separator
+    // seperater using colon
     XmitUART2(':', 1);
 
-    // Seconds tens and ones
+    // tens and ones for seconds
     XmitUART2((seconds / 10) + '0', 1);
     XmitUART2((seconds % 10) + '0', 1);
-
+    
+    // release semaphore
     xSemaphoreGive(uart_sem);
 }
 
 
 
-// helper to print a small uint as decimal (no stdio)
+// helper to print a small uint as decimal
+// Manual conversion for numbers to text (can't do printf)
 static void PrintUIntDec(uint16_t val)
 {
+    // final output buffer 5 digits and null
     char buf[6];
     int idx = 0;
 
+    // There is a special case for zero just print 0
     if (val == 0)
     {
         buf[idx++] = '0';
     }
     else
     {
+        // store the digits in reverse order temporarily
         char tmp[6];
         int t = 0;
+        
+        // take out digits from least to most significant
         while (val > 0 && t < 5)
         {
+            // Ascii conversion
             tmp[t++] = (val % 10) + '0';
             val /= 10;
         }
+        // Reverse back into the output buffer
         while (t > 0)
         {
             buf[idx++] = tmp[--t];
         }
     }
+    // null string for ending
     buf[idx] = '\0';
-
+    
+    // Send each char over uart individually 
     for (int i = 0; buf[i] != '\0'; i++)
     {
         XmitUART2(buf[i], 1);
@@ -384,12 +357,12 @@ static void PrintUIntDec(uint16_t val)
 }
 
 
-// ---------- NEW TASK: WAITING STATE ----------
+// Waiting task
 void vWaitingTask(void *pvParameters)
 {
     (void) pvParameters;
 
-    // Print banner only once at startup
+    // Print banner at startup
     static uint8_t bannerPrinted = 0;
     static uint8_t oncePrintedPB1Debug = 0;
 
@@ -397,12 +370,12 @@ void vWaitingTask(void *pvParameters)
     {
         if (currentState != WAITING_ST)
         {
-            // Not in WAITING, just yield a bit
+            // Just a regular yield 
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
         }
 
-        // Initial banner (only once after reset)
+        // Initial banner printing
         if (!bannerPrinted)
         {
             xSemaphoreTake(uart_sem, portMAX_DELAY);
@@ -418,7 +391,7 @@ void vWaitingTask(void *pvParameters)
         // LEDs for WAITING state
         LED0_LAT = 0;
         LED1_LAT = 0;
-        // LED2 pulsing is handled in Timer2 ISR when currentState == WAITING_ST
+        // LED2 pulsing is handled in Timer2 interrupt service routine
 
         // Show the waiting message only once each time we return to WAITING
         if (!waitingPromptShown)
@@ -430,7 +403,8 @@ void vWaitingTask(void *pvParameters)
             waitingPromptShown = 1;
         }
 
-        // One-time debug print of PB1 at reset
+        // Debug print - only for button testing
+        /*
         if (!oncePrintedPB1Debug)
         {
             xSemaphoreTake(uart_sem, portMAX_DELAY);
@@ -442,11 +416,12 @@ void vWaitingTask(void *pvParameters)
 
             oncePrintedPB1Debug = 1;
         }
+        */
 
-        // PB1 click detection (simple debounce as before)
-        if (PB1_PORT == 0)  // button pressed (active low)
+        // PB1 click detection simple debounce
+        if (PB1_PORT == 0)  // button pressed is active low
         {
-            vTaskDelay(pdMS_TO_TICKS(50));  // crude debounce
+            vTaskDelay(pdMS_TO_TICKS(50));  // debounce time
 
             if (PB1_PORT == 0)
             {
@@ -454,13 +429,13 @@ void vWaitingTask(void *pvParameters)
                 Disp2String("\n\r[WAITING] PB1 press detected, moving to TIME_ENTRY.\n\r");
                 xSemaphoreGive(uart_sem);
 
-                // wait for release so we don?t retrigger
+                // wait for release to prevent re input of button
                 while (PB1_PORT == 0)
                 {
                     vTaskDelay(pdMS_TO_TICKS(10));
                 }
 
-                waitingPromptShown = 0;   // so WAITING message reprints next time
+                waitingPromptShown = 0;   // so the waiting prompt shows again next time
                 currentState = STATE_TIME_ENTRY;
             }
         }
@@ -471,12 +446,12 @@ void vWaitingTask(void *pvParameters)
 }
 
 
-// ---------- NEW TASK: TIME ENTRY STATE ----------
+// Time Entry State
 void vTimeEntryTask(void *pvParameters)
 {
     (void) pvParameters;
 
-    // Input characters buffer (same as before)
+    // Input characters buffer 
     char inputBuf[8];
 
     for (;;)
@@ -487,24 +462,25 @@ void vTimeEntryTask(void *pvParameters)
             continue;
         }
 
-        // Stop LED2 pulsing while entering time
+        // Stop LED2 pulsing when entering time
         dutyTicks = 0;
         LED2_LAT  = 0;
 
         LED0_LAT = 0;
         LED1_LAT = 0;
-
-        waitingPromptShown = 0; // so WAITING message runs again next time we enter that state
+        
+        // this is so the WAITING message runs again next time we enter that state
+        waitingPromptShown = 0; 
 
         xSemaphoreTake(uart_sem, portMAX_DELAY);
         Disp2String("\n\r[TIME ENTRY] Please enter time as MMSS (e.g., 0130 for 1min 30s), then press ENTER:\n\r> ");
         xSemaphoreGive(uart_sem);
 
-        // Blocking receive; echoes characters as typed
+        // Blocking receives and then echoes characters back
         RecvUart(inputBuf, sizeof(inputBuf));
         inputBuf[sizeof(inputBuf)-1] = '\0';
 
-        // Extract digits only (same logic as before)
+        // This is to extract digits only 
         char digits[5] = {0};
         int di = 0;
         for (int i = 0; inputBuf[i] != '\0' && di < 4; i++)
@@ -538,11 +514,11 @@ void vTimeEntryTask(void *pvParameters)
         }
         else
         {
-            // invalid -> default 00:10
+            // if invalid -> default 00:10
             mm = 0;
             ss = 10;
         }
-
+        // 60 seconds in a minute
         if (ss > 59) ss = 59;
 
         gMinutes = (uint16_t)mm;
@@ -554,22 +530,23 @@ void vTimeEntryTask(void *pvParameters)
         Disp2String("[TIME ENTRY] Long press PB2+PB3 to reset and re-enter time.\n\r");
         xSemaphoreGive(uart_sem);
 
-        // Wait here for PB2+PB3 short or long press (same behavior as before)
+        // Wait here for PB2+PB3 short or long press 
         uint16_t comboHoldTicks = 0;
         uint8_t  comboActive    = 0;
-        const uint16_t COMBO_LONG_PRESS_MS    = 1000; // ~1s long press
+        // Approx 1s long press
+        const uint16_t COMBO_LONG_PRESS_MS    = 1000; 
         const uint16_t COMBO_TICK_MS          = 20;
         const uint16_t COMBO_LONG_PRESS_TICKS = (COMBO_LONG_PRESS_MS / COMBO_TICK_MS);
 
         for (;;)
         {
-            // If other tasks changed the state (e.g., somehow aborted), break out
+            // If other tasks changed the state then break
             if (currentState != STATE_TIME_ENTRY)
             {
                 break;
             }
-
-            uint8_t p2 = PB2_PORT;  // pull-up -> 1 = released, 0 = pressed
+            // 1 = released, 0 = pressed. (pullup button )
+            uint8_t p2 = PB2_PORT; 
             uint8_t p3 = PB3_PORT;
 
             if ((p2 == 0) && (p3 == 0))
@@ -589,21 +566,21 @@ void vTimeEntryTask(void *pvParameters)
             {
                 if (comboActive)
                 {
-                    // both were pressed and now at least one released
+                    // both were pressed and atleast one is released
                     if (comboHoldTicks >= COMBO_LONG_PRESS_TICKS)
                     {
-                        // Long press: reset time and re-enter
+                        // Long press is to reset timer
                         xSemaphoreTake(uart_sem, portMAX_DELAY);
                         Disp2String("\n\r[TIME ENTRY] Long press PB2+PB3 detected. Resetting time.\n\r");
                         xSemaphoreGive(uart_sem);
 
                         gMinutes = 0;
                         gSeconds = 0;
-                        // stay in STATE_TIME_ENTRY, outer loop will ask again
+                        // stay in STATE_TIME_ENTRY, the outer loop will ask for it again 
                     }
                     else if (comboHoldTicks > 0)
                     {
-                        // Short click: start countdown
+                        // Short click starts the countdown
                         xSemaphoreTake(uart_sem, portMAX_DELAY);
                         Disp2String("\n\r[TIME ENTRY] Starting countdown.\n\r");
                         xSemaphoreGive(uart_sem);
@@ -612,7 +589,7 @@ void vTimeEntryTask(void *pvParameters)
                         currentState         = STATE_COUNTDOWN;
                     }
 
-                    break;  // exit this inner wait loop after action
+                    break;  // exit inner loop 
                 }
 
                 // no active combo
@@ -623,12 +600,12 @@ void vTimeEntryTask(void *pvParameters)
             vTaskDelay(pdMS_TO_TICKS(COMBO_TICK_MS));
         }
 
-        // Outer for(;;) repeats; if state is TIME_ENTRY we re-prompt, if COUNTDOWN we just idle
+        // Outer for(;;) repeats and if state is in TIME_ENTRY we re ask, if it is in the COUNTDOWN we just idle
     }
 }
 
 
-// ---------- NEW TASK: COUNTDOWN STATE (periodic) ----------
+// Countdown task (periodic task which means it repeats)
 void vCountdownTask(void *pvParameters)
 {
     (void) pvParameters;
@@ -639,7 +616,7 @@ void vCountdownTask(void *pvParameters)
     {
         if (currentState != STATE_COUNTDOWN)
         {
-            // when we leave COUNTDOWN, ensure next entry re-initializes
+            // when we leave COUNTDOWN, ensure next attempt goes back to initialization 
             countdownInitialised = 0;
             vTaskDelay(pdMS_TO_TICKS(20));
             continue;
@@ -652,7 +629,7 @@ void vCountdownTask(void *pvParameters)
             LED1_LAT = 1;  // start with LED1 on for 1 Hz blink
             LED2_LAT = 0;  // LED2 brightness via dutyTicks + ADC
 
-            // reset pulsing state for LED2; now LED2 will be driven by ADC logic
+            // reset the pulsing state for LED2 now LED2 will be driven by ADC logic
             pulseCounter = 0;
             dutyStep     = 1;
 
@@ -660,9 +637,12 @@ void vCountdownTask(void *pvParameters)
             countdownTickCounter  = 0;
             countdownPaused       = 0;
             pb3HoldTicks          = 0;
-            led2BlinkPhase        = 1;   // start LED2 "on" phase
-            led2BlinkMode         = 1;   // default: blink in countdown
-            showExtraInfo         = 0;   // start with simple time display
+            // start LED2 in the on phase
+            led2BlinkPhase        = 1;
+            // default is blinking
+            led2BlinkMode         = 1;
+            // start with simple time display
+            showExtraInfo         = 0;   
 
             xSemaphoreTake(uart_sem, portMAX_DELAY);
             Disp2String("\n\r[COUNTDOWN] Countdown started.\n\r");
@@ -673,12 +653,13 @@ void vCountdownTask(void *pvParameters)
             countdownInitialised = 1;
         }
 
-        // Periodic tick: 100 ms
+        // Periodic tick 100 ms
         vTaskDelayUntil(&xLastWakeTime, pdMS_TO_TICKS(COUNTDOWN_TICK_MS));
 
-        // ***** PB3: pause/resume (short click) and abort (long press) *****
-        {
-            uint8_t pb3 = PB3_PORT;  // pull-up: 1 = released, 0 = pressed
+        // PB3 is for pause/resume (short click) and abort is a (long press) 
+        {   
+            
+            uint8_t pb3 = PB3_PORT;
 
             if (pb3 == 0)
             {
@@ -695,7 +676,7 @@ void vCountdownTask(void *pvParameters)
                 {
                     if (pb3HoldTicks >= PB3_LONG_PRESS_TICKS)
                     {
-                        // Long press: abort to 0:00 and go to DONE
+                        // Long press sends it back to 0:00 and then it will go to DONE
                         gMinutes = 0;
                         gSeconds = 0;
 
@@ -709,11 +690,11 @@ void vCountdownTask(void *pvParameters)
                         currentState         = STATE_DONE;
 
                         pb3HoldTicks = 0;
-                        continue; // next loop iteration will see STATE_DONE and skip logic
+                        continue; //in the next one it will be state done and next logic
                     }
                     else
                     {
-                        // Short click: toggle pause/resume
+                        // Short click is for toggle pause/resume
                         countdownPaused ^= 1;
 
                         xSemaphoreTake(uart_sem, portMAX_DELAY);
@@ -733,20 +714,21 @@ void vCountdownTask(void *pvParameters)
             }
         }
 
-        // ***** Handle UART commands 'i' and 'b' (non-blocking) *****
+        // Handle the i and b uart commands
         if (RXFlag)
         {
             char c = received_char;
-            RXFlag = 0;      // clear flag so we see the next char
+            // clear this flag so we can see the next char
+            RXFlag = 0;     
 
             if (c == 'i')
             {
-                // toggle extra info display mode
+                // turn on variable that shows extra information
                 showExtraInfo ^= 1;
             }
             else if (c == 'b')
             {
-                // toggle LED2 mode (blink vs solid)
+                // toggle LED2 mode either blink or solid
                 led2BlinkMode ^= 1;
 
                 xSemaphoreTake(uart_sem, portMAX_DELAY);
@@ -762,7 +744,7 @@ void vCountdownTask(void *pvParameters)
             }
         }
 
-        // ***** ADC: read potentiometer and update LED2 brightness *****
+        // Here ADC reads 
         {
             uint16_t adcVal = do_ADC();   // 0..1023 from AN5
             lastAdcVal = adcVal;
@@ -825,10 +807,10 @@ void vCountdownTask(void *pvParameters)
                         gSeconds--;
                     }
 
-                    // Blink LED1 at 1 Hz: toggle every second
+                    // Blink LED1 at 1 Hz approximately (slightly faster) toggle every second
                     LED1_LAT ^= 1;  // 1s on / 1s off
 
-                    // LED2 blink phase: toggle once each second if in blink mode
+                    // LED2 blink phase toggle once each second if in blink mode
                     if (led2BlinkMode)
                     {
                         led2BlinkPhase ^= 1;
@@ -836,15 +818,15 @@ void vCountdownTask(void *pvParameters)
                 }
             }
 
-            // --- Print time (simple or extended) ---
+            // Print time (simple/extended)
             if (!showExtraInfo)
             {
-                // simple view: time only
+                // simple time view
                 PrintTimeUART(gMinutes, gSeconds);
             }
             else
             {
-                // extended view: time + ADC + duty + mode
+                // extended view with time, ADC, duty and the mode
                 xSemaphoreTake(uart_sem, portMAX_DELAY);
                 Disp2String("\n\rTime remaining (extended): ");
                 xSemaphoreGive(uart_sem);
@@ -871,7 +853,7 @@ void vCountdownTask(void *pvParameters)
                 xSemaphoreGive(uart_sem);
             }
 
-            // Reached 0?
+            // If it has reached 0
             if (!countdownPaused && gMinutes == 0 && gSeconds == 0)
             {
                 currentState     = STATE_DONE;
@@ -883,7 +865,7 @@ void vCountdownTask(void *pvParameters)
 }
 
 
-// ---------- NEW TASK: DONE STATE (periodic) ----------
+// Done state
 void vDoneTask(void *pvParameters)
 {
     (void) pvParameters;
@@ -896,9 +878,9 @@ void vDoneTask(void *pvParameters)
             continue;
         }
 
-        // After the timer has elapsed, the terminal should message that the countdown is done,
-        // and LED0 and LED1 should blink rapidly in an alternating fashion.
-        // LED2 should remain solidly on. After 5 seconds, return to WAITING.
+        // After the timer has finished, the terminal messages that the countdown is done,
+        // and LED0 and LED1 blink rapidly in an alternating fashion.
+        // LED2 should remain solidly on. After 5 seconds it will return to WAITING.
 
         if (!doneMessageShown)
         {
@@ -912,15 +894,15 @@ void vDoneTask(void *pvParameters)
             LED0_LAT = 1;
             LED1_LAT = 0;
 
-            // LED2: solid, brightness from ADC (via PWM)
-            led2BlinkMode = 0;  // solid mode
+            // LED2 is solid, brightness from ADC via the PWM
+            led2BlinkMode = 0;  // sets it to solid mode
         }
 
-        // Alternate LED0 and LED1 quickly (100 ms period)
+        // Alternate LED0 and LED1 quickly approx 100ms period
         LED0_LAT ^= 1;
         LED1_LAT = !LED0_LAT;
 
-        // LED2 brightness still controlled by potentiometer (solid)
+        // LED2 brightness still controlled by potentiometer when solid during this phase
         {
             uint16_t adcVal = do_ADC();
             lastAdcVal = adcVal;
@@ -930,14 +912,14 @@ void vDoneTask(void *pvParameters)
                 led2DutyFromADC = DUTY_MAX_TICKS;
             }
 
-            // In DONE, LED2 should be solid at this brightness
+            // In DONE, LED2 should be solid at the ADC brightness
             dutyTicks = led2DutyFromADC;
         }
 
         vTaskDelay(pdMS_TO_TICKS(100));
         doneBlinkCount++;
 
-        // 100ms * 50 = 5s
+        // formula for the time is 100ms * 50 = 5s
         if (doneBlinkCount >= 50)
         {
             // Turn LEDs off and go back to waiting
@@ -949,7 +931,7 @@ void vDoneTask(void *pvParameters)
             gSeconds = 0;
             countdownInitialised = 0;
 
-            // reset pulsing variables for WAITING_ST (for LED2 pulsing)
+            // reset pulsing variables for waiting state for LED2
             dutyTicks    = 0;
             dutyStep     = 1;
             pulseCounter = 0;
@@ -976,26 +958,25 @@ void prvHardwareSetup(void)
     
     InitUART2();
     
-    // PB1 (RA4) as input
-    PB1_TRIS = 1;         // RA4 as input
+    // PB1 RA4 as input
+    PB1_TRIS = 1;         
 
-    // RA4 pull-up
+    // RA4 as a pull-up
     CNPUAbits.CNPUA4 = 1;
     
     // PB2 and PB3
     PB2_TRIS = 1;
     PB3_TRIS = 1;
     
-    // ensure PB2/PB3 pins are DIGITAL, not analog
-    //ANSELBbits.ANSB8 = 0;   // PB2 on RB8 as digital input
+    // here just double check that PB2/PB3 pins are DIGITAL, not analog (sometimes goes analog)
     ANSELBbits.ANSB9 = 0;   // PB3 on RB9 as digital input
 
-    // enable pull-ups on RB8 and RB9
+    // enable pull ups on RB8 and RB9
     CNPUBbits.CNPUB8 = 1;   // RB8 pull-up
     CNPUBbits.CNPUB9 = 1;   // RB9 pull-up
 
 
-    // Timer 2 for LED pulsing and PWM
+    // Initialize the timer 2 for LED pulsing and PWM
     InitTimer2ForPWM();
     
 }
@@ -1006,7 +987,7 @@ int main(void) {
 
     uart_sem = xSemaphoreCreateMutex();
     
-    // ---------- FSM / global state initialization (moved from old vMainTimerTask) ----------
+    // FSM initialization for ALL variables 
     currentState          = WAITING_ST;
     waitingPromptShown    = 0;
     countdownInitialised  = 0;
@@ -1021,7 +1002,7 @@ int main(void) {
     pulseCounter          = 0;
 
     showExtraInfo         = 0;
-    led2BlinkMode         = 1; // blink in countdown by default
+    led2BlinkMode         = 1; //blink is set on by default here
     led2DutyFromADC       = 0;
     led2BlinkPhase        = 1;
 
@@ -1030,38 +1011,18 @@ int main(void) {
     pb3HoldTicks          = 0;
     lastAdcVal            = 0;
 
-    // ---------- Create tasks (NOW USING MULTIPLE TASKS) ----------
-    // WAITING + PB1 (aperiodic)
-    xTaskCreate( vWaitingTask,
-                 "WaitTask",
-                 TASK_STACK_SIZE,
-                 NULL,
-                 2,
-                 NULL );
+    // Using multiple tasks for good FreeRTOS implementation
+    // WAITING & PB1 
+    xTaskCreate( vWaitingTask, "WaitTask", TASK_STACK_SIZE, NULL, 2, NULL);
 
-    // TIME ENTRY via UART + PB2+PB3 combo (aperiodic)
-    xTaskCreate( vTimeEntryTask,
-                 "TimeEntryTask",
-                 TASK_STACK_SIZE,
-                 NULL,
-                 2,
-                 NULL );
+    // TIME ENTRY using UART with the PB2+PB3 combo meal (aperiodic)
+    xTaskCreate( vTimeEntryTask, "TimeEntryTask", TASK_STACK_SIZE, NULL, 2, NULL);
 
-    // COUNTDOWN core timing + ADC + PB3 pause/abort + 'i'/'b' (periodic)
-    xTaskCreate( vCountdownTask,
-                 "CountdownTask",
-                 TASK_STACK_SIZE,
-                 NULL,
-                 3,     // slightly higher priority so timing is solid
-                 NULL );
+    // COUNTDOWN has the core timing with the ADC, PB3 pause/abort and "i"/"b" its a periodic function
+    xTaskCreate( vCountdownTask, "CountdownTask", TASK_STACK_SIZE, NULL, 3, NULL);
 
-    // DONE state LEDs + LED2 solid via ADC, timeout back to WAITING (periodic)
-    xTaskCreate( vDoneTask,
-                 "DoneTask",
-                 TASK_STACK_SIZE,
-                 NULL,
-                 2,
-                 NULL );
+    // DONE state has LED2 as solid via the ADC and a timeout back to WAITING
+    xTaskCreate( vDoneTask, "DoneTask", TASK_STACK_SIZE, NULL, 2, NULL);
 
     vTaskStartScheduler();
     
