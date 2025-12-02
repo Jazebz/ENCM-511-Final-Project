@@ -775,7 +775,7 @@ void vCountdownTask(void *pvParameters)
             }
         }
 
-        // ***** 1 second bookkeeping *****
+        // Increments countdown tick counter
         countdownTickCounter++;
         if (countdownTickCounter >= (1000 / COUNTDOWN_TICK_MS))
         {
